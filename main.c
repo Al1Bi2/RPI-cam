@@ -4,7 +4,7 @@
 #include <string.h>
 #include <signal.h>
 #include <stdlib.h>
-
+#include <time.h>
 
 #include "ov7670.h"
 #include "i2c.h"
@@ -96,7 +96,8 @@ void hsync_callback(int gpio, int level, uint32_t tick) {
  		data_callback(level,tick,11);
     }
 }
-
+ clock_t start, end;
+struct timespec start_n, end_n;
 volatile uint32_t vsync_last = 1;
 // Колбэк для VSYNC
 void vsync_callback(int gpio, int level, uint32_t tick) {
@@ -109,9 +110,14 @@ void vsync_callback(int gpio, int level, uint32_t tick) {
      write_index = 0;
     	if(capturing==0){
     		capturing  = 1;
+            start = clock();
+            clock_gettime(CLOCK_MONOTONIC, &start_n); 
+
     		//return;
     	}else{
     		capturing  = 0;
+            end = clock();
+            clock_gettime(CLOCK_MONOTONIC, &end_n); 
     	}
     	
 		//print_buffer_info();
@@ -138,13 +144,16 @@ void I2C_settings(){
 
 
     set_up_VGA(handle);
+
+    //set_up_window(handle,143,583,0,0);
+
 	printf("CLOSING\n");
 	i2cClose(handle);
 	printf("CLOSING\n");
 }
 
 void set_up_pins(){
-    gpioCfgBufferSize(500);
+    gpioCfgBufferSize(100);
 	gpioCfgClock(1,1,1);
 	printf("WTF");
 	if (gpioInitialise() < 0) {
@@ -197,6 +206,12 @@ void do_it(){
     while (capturing && keep_running) {
         gpioDelay(2);
     }
+    double elapsed_time = (double)(end - start) / CLOCKS_PER_SEC;
+    printf("Процессорное время исполнения: %.6f секунд\n", elapsed_time);
+
+    elapsed_time = (end_n.tv_sec - start_n.tv_sec) +
+                          (end_n.tv_nsec - start_n.tv_nsec) / 1e9;
+    printf("Реальное время исполнения: %.6f секунд\n", elapsed_time);
 
     printf("Захват завершён. Обработка изображения...\n");
     buffer_to_image();
@@ -264,7 +279,7 @@ void buffer_to_image(){
            //printf("%d\n",pixel_x);
             px+=pixel_x;
             if(pixel_x!=IMAGE_WIDTH){
-                printf("!%d\n",pixel_x);
+                //printf("!%d\n",pixel_x);
             }
             pixel_x=0;
             pixel_y++;
