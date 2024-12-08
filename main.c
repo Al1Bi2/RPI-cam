@@ -5,7 +5,12 @@
 #include <signal.h>
 #include <stdlib.h>
 
+
+#include "ov7670.h"
+#include "i2c.h"
 #include "utils.h"
+#include "yuv_to_bmp.h"
+#include "settings.h"
 
 #define PCLK_PIN 17
 #define VSYNC_PIN 22
@@ -39,7 +44,7 @@ volatile PinDataBuffer data_buffer[BUFFER_SIZE];
 volatile unsigned  long write_index={0};  // Индексы для записи в буферы данных
 volatile unsigned  long read_index = {0};             // Индексы для чтения, обновляем при чтении в PCLK
 
-unsigned char image[IMAGE_HEIGHT+10][IMAGE_WIDTH+10];
+unsigned char image[IMAGE_HEIGHT][IMAGE_WIDTH];
 volatile int capturing = 0;
 volatile int pixel_x = 0, pixel_y = 0;
 
@@ -69,27 +74,6 @@ const f DATACALLBACKS[8]={&data0_callback, &data1_callback, &data2_callback, &da
 
 int build_byte(int pins[8]);
 void buffer_to_image();
-
-
-void visualize_image() {
-    printf("Визуализация изображения YUV 4:2:2:\n");
-     const char* brightness_symbols = " .:-=+*%@#";
-    for (int y = 0; y < IMAGE_HEIGHT; y+=2) {
-        for (int x = 0; x < IMAGE_WIDTH; x += 4) {
-            // Берем Y для текущего пикселя
-            unsigned char Y1 = image[y][x];
-            // Для Y2, берем из следующего пикселя (x + 1)
-            unsigned char Y2 = image[y][x];
-	     int index1 = Y1 * 9 / 255; // Преобразуем в диапазон 0-9
-            // Вычисляем яркость (пиксель) и соответствующий символ
-
-
-            // Печатаем символы для каждого пикселя
-                        printf("%c%c", brightness_symbols[index1], brightness_symbols[index1]);
-        }
-        printf("\n");
-    }
-}
 
 
 
@@ -122,6 +106,7 @@ void vsync_callback(int gpio, int level, uint32_t tick) {
     if (level == 0) {
      if(tick - vsync_last < 500) return;
      data_callback(level, tick, 12);
+     write_index = 0;
     	if(capturing==0){
     		capturing  = 1;
     		//return;
@@ -135,33 +120,7 @@ void vsync_callback(int gpio, int level, uint32_t tick) {
     }
 }
 
-void set_up_QQVGA(int handle){
-    RPi_write_reg_I2C(handle,0x12,0x00);
-    RPi_write_reg_I2C(handle,0x0C,0x00);
-    RPi_write_reg_I2C(handle,0x3E,0x00);    
-    RPi_write_reg_I2C(handle,0x70,0x3A);
-    RPi_write_reg_I2C(handle,0x71,0x35);
-    RPi_write_reg_I2C(handle,0x72,0x11);
-    RPi_write_reg_I2C(handle,0x73,0xF0);
-    RPi_write_reg_I2C(handle,0xA2,0x02);
 
-    int reg0x12  = RPi_read_reg_I2C(handle,0x12);
-    printf("reg0x12 %x\n",reg0x12);
-    int reg0x0c  = RPi_read_reg_I2C(handle,0x0C);
-    printf("reg0x0c %x\n",reg0x0c);
-    int reg0x3e  = RPi_read_reg_I2C(handle,0x3E);
-    printf("reg0x3e %x\n",reg0x3e);
-    int reg0x70  = RPi_read_reg_I2C(handle,0x70);
-    printf("reg0x70 %x\n",reg0x70);
-    int reg0x71  = RPi_read_reg_I2C(handle,0x71);
-    printf("reg0x71 %x\n",reg0x71);
-    int reg0x72  = RPi_read_reg_I2C(handle,0x72);
-    printf("reg0x72 %x\n",reg0x72);
-    int reg0x73  = RPi_read_reg_I2C(handle,0x73);
-    printf("reg0x73 %x\n",reg0x73);
-    int reg0xa2  = RPi_read_reg_I2C(handle,0xA2);
-    printf("reg0xa2 %x\n",reg0xa2);
-}
 void I2C_settings(){
     printf("START I2C\n");
 	int handle  = i2cOpen(1,0x21,0);
@@ -171,13 +130,14 @@ void I2C_settings(){
 
     int reg0x11  = RPi_read_reg_I2C(handle,0x11);
 	printf("reg0x11 %x\n",reg0x11);
-    regwrite  = RPi_write_reg_I2C(handle,0x11,0x9F);  //freqency down 16 times
+    regwrite  = RPi_write_reg_I2C(handle,0x11,0x9F);  //freqency down 32 times
 	reg0x11  = RPi_read_reg_I2C(handle,0x11);
     printf("reg0x11 %x\n",reg0x11);
 
     RPi_write_reg_I2C(handle,0x15,0x20); // no pclk when no href
 
-    set_up_QQVGA(handle);
+
+    set_up_VGA(handle);
 	printf("CLOSING\n");
 	i2cClose(handle);
 	printf("CLOSING\n");
@@ -199,7 +159,7 @@ void set_up_pins(){
     gpioSetAlertFunc(PCLK_PIN, pclk_callback);
     gpioSetAlertFunc(VSYNC_PIN, vsync_callback);
     gpioSetAlertFunc(HSYNC_PIN, hsync_callback);
-    gpioHardwarePWM(12, 11000000, 500000);
+    gpioHardwarePWM(12, 8000000, 500000);
     gpioDelay(1000);
     
     for(int i = 0; i<8;i++){
@@ -217,9 +177,8 @@ void cleanup(){
     gpioDelay(10000);
     gpioTerminate();
 }
-
-int main() {
-    printf("Start\n");
+void do_it(){
+ printf("Start\n");
     atexit(cleanup);
     printf("set atexit\n");
 	setup_safe_sigint_handler();
@@ -236,32 +195,49 @@ int main() {
     capturing=1;
     printf("Start capturing");
     while (capturing && keep_running) {
-        gpioDelay(20);
+        gpioDelay(2);
     }
 
     printf("Захват завершён. Обработка изображения...\n");
     buffer_to_image();
-    /*for (int y = 0; y < IMAGE_HEIGHT; y++) {
+    save_as_bmp("output.bmp", image,IMAGE_WIDTH,IMAGE_HEIGHT);
+    //cleanup();
+}
+void test_bmp(){
+ // Пример заполнения изображения тестовыми данными (градиент яркости)
+    unsigned char image[IMAGE_HEIGHT][IMAGE_WIDTH];
+    for (int y = 0; y < IMAGE_HEIGHT; y++) {
         for (int x = 0; x < IMAGE_WIDTH; x++) {
-            printf("%02X ", image[y][x]);
+            image[y][x] = (unsigned char)((x + y) % 256);
         }
-        printf("\n");
-    }*/
-   save_image();
-	printf("%d\n",i);
-    cleanup();
+    }
+
+    // Сохранение в файл
+    save_as_bmp("output.bmp", image,IMAGE_WIDTH,IMAGE_HEIGHT);
+
+    printf("Image saved as output.bmp\n");
+}
+
+int main() {
+    do_it();
+    //test_bmp();
+
+   
     return 0;
 }
+
 int build_byte(int pins[8]){
     int byte = 0;
     for(int i = 0;i<8;i++){
-        byte += pins[i]<<(7-i);
+        byte += pins[i]<<(i);
     }
     return byte;
 }
 
 void buffer_to_image(){
     int pins[8] = {0};
+    float px = 0;
+    float py = 0;
     pixel_x=0;
     pixel_y=0;
     char byte = 0;
@@ -274,8 +250,8 @@ void buffer_to_image(){
             //printf("%d!",pins[0]);
         }
         if(event.pin==10){
-            if(byte == 0){
-                image[pixel_x][pixel_y] = build_byte(pins);
+            if(byte == 1){
+                image[pixel_y][pixel_x] = build_byte(pins);
                 int out  = build_byte(pins);
                 //printf("%d-%d|",pixel_x,out);
                 pixel_x++;
@@ -285,7 +261,11 @@ void buffer_to_image(){
             byte = byte%2;     
         }
             if(event.pin==11){
-            printf("%d\n",pixel_x);
+           //printf("%d\n",pixel_x);
+            px+=pixel_x;
+            if(pixel_x!=IMAGE_WIDTH){
+                printf("!%d\n",pixel_x);
+            }
             pixel_x=0;
             pixel_y++;
             byte = 0;
@@ -293,6 +273,12 @@ void buffer_to_image(){
         if(event.pin==12){
             printf("!!!!!%d",pixel_y);
             printf("|%u\n",event.tick);
+            py+=pixel_y;
+            px = px/pixel_y;
+            printf("%f %f\n",px,py);
+            px=0;
+            py=0;
+
             pixel_x=0;
             pixel_y=0;
             byte = 0;
@@ -304,8 +290,3 @@ void buffer_to_image(){
     write_index = 0; // Очищаем write_index для нового захвата
 }
 
-void save_image(){
-    // Сохраняем изображение в файл
-    FILE *file = fopen("image.yuv", "wb");
-    fwrite(image, IMAGE_WIDTH * IMAGE_HEIGHT, 2, file);
-    fclose(file);}

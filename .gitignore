@@ -1,3 +1,5 @@
+*
+!*.*
 # Prerequisites
 *.d
 
@@ -55,4 +57,6 @@ Makefile
 *.zip
 *.json
 
-* 
+
+.bmp
+
